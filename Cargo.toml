@@ -1,0 +1,25 @@
+[package]
+name = "Furina"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "Furina"
+path = "src/main.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "libfurina"
+
+
+[dependencies]
+hudhook = { git = "https://github.com/CLOEI/hudhook.git" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+]}
+retour = { version = "0.3", features = ["static-detour"] }
+bson = "3.1.0"
+zstd = "0.13.3"
