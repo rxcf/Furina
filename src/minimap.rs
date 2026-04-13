@@ -96,11 +96,16 @@ fn draw_player_markers(
         let map_w = minimap.width as f32;
         let map_h = minimap.height as f32;
 
-        let game_range_x = map_w / 3.07; 
-        let game_range_y = map_h / 3.15;
+        const GAME_SCALE_X: f32 = 3.07;
+        const GAME_SCALE_Y: f32 = 3.15;
+        const OFFSET_X: f32 = 0.3;
+        const OFFSET_Y: f32 = 0.2;
 
-        let map_x = ((x + 0.3) / game_range_x) * map_w;
-        let map_y = ((y + 0.2) / game_range_y) * map_h;
+        let game_range_x = map_w / GAME_SCALE_X;
+        let game_range_y = map_h / GAME_SCALE_Y;
+
+        let map_x = ((x + OFFSET_X) / game_range_x) * map_w;
+        let map_y = ((y + OFFSET_Y) / game_range_y) * map_h;
 
         let center = [
             origin[0] + (map_x * tile_scale),
