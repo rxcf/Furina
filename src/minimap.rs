@@ -39,13 +39,13 @@ pub fn render_minimap(
 
     let avail = ui.content_region_avail();
     
-    let safe_width = avail[0].max(128.0); 
-    let safe_height = (avail[1] - text_height).max(128.0);
+    let safe_width = avail[0].max(1.0);
+    let safe_height = (avail[1] - text_height).max(1.0);
 
     let scale_x = safe_width / minimap.width as f32;
     let scale_y = safe_height / minimap.height as f32;
     
-    let tile_scale = scale_x.min(scale_y).max(1.0);
+    let tile_scale = scale_x.min(scale_y);
     
     let size = [
         minimap.width as f32 * tile_scale, 
