@@ -29,7 +29,7 @@ use offsets::{
     CHAT_UI_SUBMIT_RVA, CHAT_UI_UPDATE_RVA, IL2CPP_STRING_NEW_LEN_RVA, RECEIVE_RVA, SEND_RVA,
     SUBMIT_WORLD_CHAT_RVA,
 };
-use packet_handler::{AppState, app_state, process_packet};
+use packet_handler::{AppState, app_state, process_packet, try_parse_outer_document};
 
 static FIRST_RENDER: AtomicBool = AtomicBool::new(false);
 static PACKET_LOGGING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -71,10 +71,20 @@ static_detour! {
     static ChatUiUpdateDetour: unsafe extern "system" fn(*mut c_void, *const c_void);
 }
 
-#[derive(Default)]
 pub struct RenderLoop {
     chat_input: String,
     chat_status: String,
+    visible: bool,
+}
+
+impl Default for RenderLoop {
+    fn default() -> Self {
+        Self {
+            chat_input: String::new(),
+            chat_status: String::new(),
+            visible: true,
+        }
+    }
 }
 
 impl ImguiRenderLoop for RenderLoop {
@@ -83,13 +93,31 @@ impl ImguiRenderLoop for RenderLoop {
             info!("imgui render loop reached");
         }
 
+        if ui.is_key_pressed(imgui::Key::Insert) {
+            self.visible = !self.visible;
+        }
+
         let display_size = ui.io().display_size;
+        let fps = ui.io().framerate;
         let mut packet_logging = PACKET_LOGGING_ENABLED.load(Ordering::Relaxed);
+
+        let text = format!("Furina | {:.0} FPS | Toggle UI (Insert)", fps);
+        let text_size = ui.calc_text_size(&text);
+        let pos = [
+            display_size[0] - text_size[0] - 15.0,
+            display_size[1] - text_size[1] - 15.0,
+        ];
+        ui.get_foreground_draw_list().add_text(pos, 0x66FFFFFF, text);
+
+        if !self.visible {
+            return;
+        }
+
         let state = app_state().lock().unwrap();
 
         ui.window("Furina")
             .position([20.0, 20.0], Condition::FirstUseEver)
-            .size([560.0, 520.0], Condition::FirstUseEver)
+            .size([560.0, 610.0], Condition::FirstUseEver)
             .build(|| {
                 if let Some(_tabs) = ui.tab_bar("##furina-tabs") {
                     if let Some(_tab) = ui.tab_item("Basic") {
@@ -103,6 +131,8 @@ impl ImguiRenderLoop for RenderLoop {
                                 if packet_logging { "enabled" } else { "disabled" }
                             );
                         }
+
+                        ui.spacing();
 
                         ui.text(if PACKET_HOOKS_READY.load(Ordering::Relaxed) {
                             "Packet hooks: ready"
@@ -126,36 +156,61 @@ impl ImguiRenderLoop for RenderLoop {
                             "Display size: {:.0} x {:.0}",
                             display_size[0], display_size[1]
                         ));
+                        ui.text(format!(
+                            "Framerate: {:.0}",
+                            fps
+                        ));
+
+                        ui.spacing();
+
+                        if ui.button("Eject DLL") {
+                            unsafe {
+                                let _ = SendDetour.disable();
+                                let _ = ReceiveDetour.disable();
+                                let _ = SubmitWorldChatDetour.disable();
+                                let _ = ChatUiUpdateDetour.disable();
+                                info!("All detours disabled safely.");
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            hudhook::eject();
+                        }
                     }
 
                     if let Some(_tab) = ui.tab_item("World") {
                         if state.current_world.is_some() {
                             let avail = ui.content_region_avail();
-                            let spacing = ui.clone_style().item_spacing[0];
+                            let spacing = ui.clone_style().item_spacing;
                             let right_width = 190.0_f32.min((avail[0] * 0.38).max(150.0));
-                            let left_width = (avail[0] - right_width - spacing).max(120.0);
-                            let pane_height = (avail[1] - 8.0).max(120.0);
+                            let left_width = (avail[0] - right_width - spacing[0]).max(120.0);
+                            let pane_height = (avail[1] - spacing[1] - 5.0) / 2.0;
 
                             ui.child_window("##world-map")
                                 .size([left_width, pane_height])
                                 .border(true)
+                                .scroll_bar(false)
                                 .build(|| {
                                     render_minimap(
                                         ui,
                                         &state.players,
-                                        state.self_user_id,
+                                        state.self_user_id.clone(),
                                         state.minimap.as_ref(),
                                     );
                                 });
 
                             ui.same_line();
 
-                            ui.child_window("##world-players")
+                            ui.child_window("##world-chat")
                                 .size([right_width, pane_height])
                                 .border(true)
                                 .build(|| {
                                     render_chat_controls(ui, self);
-                                    ui.separator();
+                                });
+
+                            ui.child_window("##world-players")
+                                .size([0.0, pane_height])
+                                .border(true)
+                                .horizontal_scrollbar(true)
+                                .build(|| {
                                     render_player_list(ui, &state);
                                 });
                         } else {
@@ -172,16 +227,38 @@ fn render_player_list(ui: &imgui::Ui, state: &AppState) {
 
     for player in state.sorted_players() {
         let pos = match (player.x, player.y) {
-            (Some(x), Some(y)) => format!(" ({x:.1}, {y:.1})"),
+            (Some(x), Some(y)) => format!("({x:.1}, {y:.1})"),
             _ => String::new(),
         };
 
-        let label = if player.user_id == state.self_user_id {
-            format!("{} (you){pos}", player.name)
+        if player.user_id == state.self_user_id {
+            let _marker_color = ui.push_style_color(imgui::StyleColor::Text, [1.0, 1.0, 1.0, 1.0]);
+            ui.bullet();
+            _marker_color.pop();
+
+            ui.same_line();
+
+            ui.text(player.name);
+
+            ui.same_line();
+
+            ui.text_disabled("(you)");
         } else {
-            format!("{}{pos}", player.name)
-        };
-        ui.bullet_text(label);
+            let _marker_color = ui.push_style_color(imgui::StyleColor::Text, player.marker_color);
+            ui.bullet();
+            _marker_color.pop();
+
+            ui.same_line();
+
+            ui.text(&player.name);
+
+            ui.same_line();
+
+            ui.text_disabled(format!("{pos} | Level: {} | Gems: {}", 
+                player.xp_level.unwrap_or(0), 
+                player.gem_amount.unwrap_or(0)
+            ));
+        }
     }
 }
 
@@ -308,7 +385,22 @@ fn maybe_preview_packet(direction: &str, bytes: &[u8]) {
         return;
     }
 
-    println!("{}", format_packet_dump(direction, bytes));
+    if let Some(doc) = try_parse_outer_document(bytes) {
+        let id = doc.get_document("m0").ok().and_then(|m0| m0.get_str("ID").ok());
+        let mc = doc.get_i32("mc").or_else(|_| doc.get_i64("mc").map(|v| v as i32)).unwrap_or(-1);
+
+        if (id == Some("p") || id == Some("mP")) && mc == 1 {
+            return;
+        }
+
+        if id.is_none() && mc == 0 {
+            return;
+        }
+
+        print!("{}", format!("[{}] {:#}\n", direction, doc));
+    } else {
+        println!("{}", format_packet_dump(direction, bytes));
+    }
 }
 
 unsafe extern "system" fn send_detour(method: *const c_void) -> *mut c_void {

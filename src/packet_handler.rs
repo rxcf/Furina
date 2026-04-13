@@ -11,22 +11,25 @@ static APP_STATE: OnceLock<Mutex<AppState>> = OnceLock::new();
 
 #[derive(Clone, Default)]
 pub struct PlayerInfo {
-    pub user_id: Option<i64>,
+    pub user_id: Option<String>,
+    pub marker_color: [f32; 4],
     pub name: String,
     pub x: Option<f32>,
     pub y: Option<f32>,
     pub dir: Option<i32>,
     pub anim: Option<i32>,
-    pub status_icon: Option<i32>,
+    pub xp_level: Option<i32>,
+    pub gem_amount: Option<i32>,
     pub in_portal: bool,
+    pub status_icon: Option<i32>,
 }
 
 #[derive(Default)]
 pub struct AppState {
     pub current_world: Option<String>,
-    pub self_user_id: Option<i64>,
+    pub self_user_id: Option<String>,
     pub self_user_name: Option<String>,
-    pub players: HashMap<i64, PlayerInfo>,
+    pub players: HashMap<String, PlayerInfo>,
     pub minimap: Option<MinimapData>,
 }
 
@@ -58,7 +61,7 @@ pub fn process_packet(bytes: &[u8], is_receive: bool) {
     }
 }
 
-fn try_parse_outer_document(bytes: &[u8]) -> Option<Document> {
+pub fn try_parse_outer_document(bytes: &[u8]) -> Option<Document> {
     if let Ok(doc) = Document::from_reader(Cursor::new(bytes)) {
         return Some(doc);
     }
@@ -133,15 +136,15 @@ fn process_message(msg: &Document, is_receive: bool) {
 
     match msg_id {
         "GPd" if is_receive => {
-            state.self_user_id = get_i64(msg, "U");
+            state.self_user_id = get_id_string(msg, "U");
             state.self_user_name = msg.get_str("UN").ok().map(str::to_owned);
 
-            if let Some(user_id) = state.self_user_id {
+            if let Some(user_id) = state.self_user_id.clone() {
                 let self_name = state
                     .self_user_name
                     .clone()
-                    .unwrap_or_else(|| user_id.to_string());
-                let player = state.players.entry(user_id).or_default();
+                    .unwrap_or_else(|| user_id.clone());
+                let player = state.players.entry(user_id.clone()).or_default();
                 player.user_id = Some(user_id);
                 player.name = self_name;
             }
@@ -158,16 +161,21 @@ fn process_message(msg: &Document, is_receive: bool) {
                 state.players.clear();
                 state.minimap = None;
 
-                if let Some(self_user_id) = state.self_user_id {
+                if let Some(self_user_id) = state.self_user_id.clone() {
                     let self_name = state
                         .self_user_name
                         .clone()
-                        .unwrap_or_else(|| self_user_id.to_string());
-                    let player = state.players.entry(self_user_id).or_default();
+                        .unwrap_or_else(|| self_user_id.clone());
+                    let player = state.players.entry(self_user_id.clone()).or_default();
                     player.user_id = Some(self_user_id);
                     player.name = self_name;
                 }
             }
+        },
+        "LW" if is_receive => {
+            state.current_world = None;
+            state.players.clear();
+            state.minimap = None;
         },
         "GWC" if is_receive => {
             if let Some(Bson::Binary(binary)) = msg.get("W") {
@@ -177,13 +185,13 @@ fn process_message(msg: &Document, is_receive: bool) {
                 }
             }
         },
-        "AnP" | "U" | "mP" | "PSicU" if is_receive => {
-            if let Some(user_id) = get_i64(msg, "U") {
+        "AnP" | "U" | "mP" | "PSicU" | "PPA" if is_receive => {
+            if let Some(user_id) = get_id_string(msg, "U") {
                 upsert_player(&mut state, msg, user_id);
             }
         },
         "PL" if is_receive => {
-            if let Some(user_id) = get_i64(msg, "U") {
+            if let Some(user_id) = get_id_string(msg, "U") {
                 state.players.remove(&user_id);
             }
         },
@@ -191,18 +199,21 @@ fn process_message(msg: &Document, is_receive: bool) {
     }
 }
 
-fn upsert_player(state: &mut AppState, msg: &Document, user_id: i64) {
-    let player = state.players.entry(user_id).or_default();
-    player.user_id = Some(user_id);
+fn upsert_player(state: &mut AppState, msg: &Document, user_id: String) {
+    let player = state.players.entry(user_id.clone()).or_default();
+    player.user_id = Some(user_id.clone());
 
+    if let Ok(u_id_str) = msg.get_str("U") {
+        player.marker_color = generate_color_from_id(u_id_str);
+    }
     if let Ok(name) = msg.get_str("UN") {
         player.name = name.to_owned();
-    } else if user_id == state.self_user_id.unwrap_or_default() {
+    } else if Some(&user_id) == state.self_user_id.as_ref() {
         if let Some(self_name) = &state.self_user_name {
             player.name = self_name.clone();
         }
     } else if player.name.is_empty() {
-        player.name = user_id.to_string();
+        player.name = user_id;
     }
 
     if let Some(x) = get_f32(msg, "x") {
@@ -217,28 +228,59 @@ fn upsert_player(state: &mut AppState, msg: &Document, user_id: i64) {
     if let Some(anim) = get_i32(msg, "a") {
         player.anim = Some(anim);
     }
-    if let Some(status_icon) = get_i32(msg, "SIc") {
-        player.status_icon = Some(status_icon);
+    if let Some(xp_level) = get_i32(msg, "xpLvL") {
+        player.xp_level = Some(xp_level);
+    }
+    if let Some(gem_amount) = get_i32(msg, "GAmt") {
+        player.gem_amount = Some(gem_amount);
     }
     if let Some(in_portal) = get_bool(msg, "inPortal") {
         player.in_portal = in_portal;
     }
+    if let Some(status_icon) = get_i32(msg, "SIc") {
+        player.status_icon = Some(status_icon);
+    }
 }
 
-fn get_i64(doc: &Document, key: &str) -> Option<i64> {
+fn generate_color_from_id(id: &str) -> [f32; 4] {
+    let r_part = u8::from_str_radix(&id[id.len()-2..], 16).unwrap_or(255);
+    let g_part = u8::from_str_radix(&id[id.len()-4..id.len()-2], 16).unwrap_or(255);
+    let b_part = u8::from_str_radix(&id[id.len()-6..id.len()-4], 16).unwrap_or(255);
+
+    [
+        (r_part as f32 / 255.0).max(0.4),
+        (g_part as f32 / 255.0).max(0.4),
+        (b_part as f32 / 255.0).max(0.4),
+        1.0
+    ]
+}
+
+fn get_id_string(doc: &Document, key: &str) -> Option<String> {
+    match doc.get(key) {
+        Some(Bson::String(v)) => Some(v.clone()),
+        Some(Bson::Int32(v)) => Some(v.to_string()),
+        Some(Bson::Int64(v)) => Some(v.to_string()),
+        Some(Bson::ObjectId(v)) => Some(v.to_hex()),
+        _ => None,
+    }
+}
+
+// Not sure if we need this in the future again, i'll just leave it here for now
+/*fn get_i64(doc: &Document, key: &str) -> Option<i64> {
     match doc.get(key) {
         Some(Bson::Int32(v)) => Some(*v as i64),
         Some(Bson::Int64(v)) => Some(*v),
         Some(Bson::Double(v)) => Some(*v as i64),
         _ => None,
     }
-}
+}*/
 
 fn get_i32(doc: &Document, key: &str) -> Option<i32> {
     match doc.get(key) {
         Some(Bson::Int32(v)) => Some(*v),
         Some(Bson::Int64(v)) => Some(*v as i32),
         Some(Bson::Double(v)) => Some(*v as i32),
+        Some(Bson::String(v)) => v.parse().ok(),
         _ => None,
     }
 }
