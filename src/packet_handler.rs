@@ -243,10 +243,18 @@ fn upsert_player(state: &mut AppState, msg: &Document, user_id: String) {
 }
 
 fn generate_color_from_id(id: &str) -> [f32; 4] {
+    if id.len() < 6 {
+        let hash: u32 = id.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+        return [
+            ((hash >> 16) as u8 as f32 / 255.0).max(0.4),
+            ((hash >> 8) as u8 as f32 / 255.0).max(0.4),
+            (hash as u8 as f32 / 255.0).max(0.4),
+            1.0,
+        ];
+    }
     let r_part = u8::from_str_radix(&id[id.len()-2..], 16).unwrap_or(255);
     let g_part = u8::from_str_radix(&id[id.len()-4..id.len()-2], 16).unwrap_or(255);
     let b_part = u8::from_str_radix(&id[id.len()-6..id.len()-4], 16).unwrap_or(255);
-
     [
         (r_part as f32 / 255.0).max(0.4),
         (g_part as f32 / 255.0).max(0.4),
